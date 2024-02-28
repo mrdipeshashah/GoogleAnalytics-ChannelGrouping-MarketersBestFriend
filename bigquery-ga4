@@ -1,0 +1,108 @@
+with temp as(    
+  select
+    concat((select value.int_value from unnest(event_params) where key = 'ga_session_id'), user_pseudo_id) as session_id,
+      user_pseudo_id as ga_client_id,
+    array_agg(
+      if(event_name in('page_view'), struct(
+        event_timestamp,
+        lower((select value.string_value from unnest(event_params) where key = 'source')) as source,
+        lower((select value.string_value from unnest(event_params) where key = 'medium')) as medium,
+        lower((select value.string_value from unnest(event_params) where key = 'name')) as name,
+        lower((select value.string_value from unnest(event_params) where key = 'campaign')) as campaign,
+        lower((select value.string_value from unnest(event_params) where key = 'page_title')) as page,
+        (select value.int_value from unnest(event_params) where key = 'entrances') as is_entrance,
+        (select value.int_value from unnest(event_params) where key = 'ignore_referrer') as ignore_referrer
+        ), null) 
+      ignore nulls) as channels_in_session,
+    countif(event_name = 'purchase') as conversions,
+    sum(ecommerce.purchase_revenue) as conversion_value
+  from `enter.tablename_123456.events_*`
+  group by user_pseudo_id, session_id
+),
+ 
+traffic as(
+  select
+    (select t.source from unnest(channels_in_session) as t where t.ignore_referrer is null order by t.event_timestamp asc limit 1) as old_source,
+    (select t.medium from unnest(channels_in_session) as t where t.ignore_referrer is null order by t.event_timestamp asc limit 1) as old_medium,
+    (select t.campaign from unnest(channels_in_session) as t where t.ignore_referrer is null order by t.event_timestamp asc limit 1) as campaign,
+    (select t.name from unnest(channels_in_session) as t where t.ignore_referrer is null order by t.event_timestamp asc limit 1) as name,
+    (select t.page from unnest(channels_in_session) as t where t.ignore_referrer is null order by t.event_timestamp asc limit 1) as page,
+    session_id,
+    
+    count(distinct session_id) as sessions,
+    sum(conversions) as conversions,
+    ifnull(sum(conversion_value), 0) as conversion_value
+  from temp
+  group by 1, 2, 3, 4, 5,6
+),
+
+fin as(
+  select
+    old_source,
+    old_medium,
+    case 
+    when old_source = 'linkedin' then 'linkedin'
+    when old_source = 'facebook' then 'facebook'
+    when old_source = 'tiktok' then 'tiktok'
+    when old_source = 'twitter' then 'twitter'
+    when old_source = 'yahoo' then 'yahoo'
+    when old_source = 'google' then 'google'
+    when old_source = 'bing' then 'bing'
+    when old_source = 'criteo' then 'criteo'
+    when old_source = 'salesforce campaigns' then 'salesforce campaigns'
+    when old_source = 'awin' then 'awin'
+    when old_source = 'tradedoubler' then 'tradedoubler'
+    when old_source is null then '(direct)'
+    else 'attention!'
+    end as Source,
+    case 
+    when old_medium = 'email' then 'email'
+    when old_medium ='affiliates' then 'affiliates'
+    when old_medium = 'organic social' then 'organic social'
+    when old_medium = 'paid social' then 'paid social'
+    when old_medium = 'display' then 'display'
+    when old_medium = 'cpc' then 'cpc'
+    when old_medium = 'referral' then 'referral'
+    when old_medium = 'organic' then 'organic'
+    when old_medium is null then 'none'
+    else 'attention!!'
+    end as Medium,
+    session_id,
+    count(distinct session_id) as sessions,
+    sum(conversions) as conversions,
+    ifnull(sum(conversion_value), 0) as conversion_value
+  from traffic
+  group by 1, 2,3,4,5
+)
+ 
+select
+  old_source,
+  old_medium,
+  Source,
+  Medium,
+  case
+    when Source ='(direct)' and Medium ='none' then 'Direct'
+    when regexp_contains(Source, r'^(google|yahoo|bing)$') and regexp_contains(Medium, r'^(organic)$') then 'Organic Search'
+    when regexp_contains(Source, r'^(google|bing)$') and regexp_contains(Medium, r'^(.*cp.*|ppc|paid.*)$') then 'Paid Search'
+    when regexp_contains(Source, r'^(youtube|twitter|facebook|fb|instagram|tiktok|ig|linkedin|pinterest)$')
+      and regexp_contains(Medium, r'^(paid social|paid_social|social_paid|paid-social|social-paid)$') 
+      then 'Paid Social'
+    when regexp_contains(Source, r'^(twitter|t.co|facebook|fb|instagram|tiktok|ig|linkedin|pinterest)$') 
+      and regexp_contains(Medium, r'^(referral|organic social|organic_social|social_organic|organic-social|social-organic)$')
+      then 'Organic Social'
+    when regexp_contains(Medium, r'^(none)$') then 'Direct'
+    when regexp_contains(Medium, r'^(display)$') then 'Display'
+    when regexp_contains(Medium, r'^(organic)$') then 'Organic Search'
+    when regexp_contains(Medium, r'^(organic social)$') then 'Organic Social'
+    when regexp_contains(Medium, r'^(paid social)$') then 'Paid Social'
+    when regexp_contains(Medium, r'^(email)$') then 'Email'
+    when regexp_contains(Medium, r'^(affiliate|affiliates)$') then 'Affiliates'
+    when Medium = 'referral' then 'Referral'
+    else '(other)'
+    end as ChannelGrouping,
+  sum(sessions) as sessions,
+  sum(conversions) as conversions,
+  sum(conversion_value) as conversion_value
+from fin
+group by 1,2,3,4
+order by 6 desc
